@@ -1,78 +1,68 @@
 import torch
 import torch.nn as nn
 from .pre_decoder import AdaptivePreDecoder
-
-# অরিজিনাল পেপারের মডেল আমদানি করবো পরে
-# এখন placeholder রাখছি
-class SpatioTemporalTransformer(nn.Module):
-    """Placeholder for original ST-Decoder model"""
-    def __init__(self, d_model=240, num_layers=4):
-        super().__init__()
-        self.d_model = d_model
-        # পরে অরিজিনাল transformer_models.py থেকে লোড করবো
-    
-    def forward(self, x):
-        # এখনো dummy
-        return x.mean(dim=[2,3,4])  # temporary
-
+from .transformer_models import SpatioTemporalLocalTransformer
 
 class AdaptiveHybridDecoder(nn.Module):
     """
-    আমাদের নতুন হাইব্রিড মডেল
-    Pre-Decoder + Spatio-Temporal Transformer
+    Main Hybrid Model (Final Version)
+    Combines Adaptive Pre-Decoder + Spatio-Temporal Transformer
     """
-    def __init__(self, d=5, r=5, confidence_threshold=0.7):
+    def __init__(self, d_model=240, num_layers=4, confidence_threshold=0.65):
         super().__init__()
         
         self.pre_decoder = AdaptivePreDecoder()
-        self.st_transformer = SpatioTemporalTransformer()
+        self.st_transformer = SpatioTemporalLocalTransformer(
+            d_model=d_model,
+            num_layers=num_layers
+        )
         
         self.confidence_threshold = confidence_threshold
-        self.d = d
-        self.r = r
-
+        
     def forward(self, x):
         """
-        x: [B, 1, X, Y, T]  -> 3D input from circuit.py
+        x: [B, 1, X, Y, T]
         """
-        B = x.shape[0]
-        
-        # Step 1: Adaptive Pre-Decoding
+        # Stage 1: Adaptive Pre-Decoding
         corrected, confidence, _ = self.pre_decoder(x)
         
-        # Step 2: Decide whether to use pre-decoder correction or send to transformer
-        use_pre = (confidence > self.confidence_threshold).float().mean()
+        # Stage 2: Confidence-based Routing
+        batch_size = x.shape[0]
+        high_conf_mask = (confidence > self.confidence_threshold).view(batch_size, 1, 1, 1, 1)
         
-        if self.training:
-            # Training-এ সবসময় residual পাঠাই transformer-এ
-            residual = corrected
-        else:
-            # Inference-এ confidence অনুযায়ী সিদ্ধান্ত
-            residual = torch.where(confidence.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) > self.confidence_threshold, 
-                                 corrected, x)
+        # Use corrected version only where confidence is high
+        routed_input = torch.where(high_conf_mask, corrected, x)
         
-        # Step 3: Main Spatio-Temporal Transformer
-        transformer_out = self.st_transformer(residual)
+        # Stage 3: Main Spatio-Temporal Transformer
+        logits = self.st_transformer(routed_input)
         
-        # Final prediction (logical error probability)
-        logits = transformer_out.mean(dim=1)  # temporary
-        
-        return logits, confidence, use_pre
-
-    def get_config(self):
         return {
-            "model_type": "AdaptiveHybridDecoder",
+            'logits': logits,
+            'confidence': confidence,
+            'high_conf_ratio': high_conf_mask.float().mean()
+        }
+
+    def get_model_info(self):
+        return {
+            "model": "AdaptiveHybridDecoder",
             "pre_decoder": "3D CNN Adaptive",
-            "main_model": "Spatio-Temporal Transformer",
-            "confidence_threshold": self.confidence_threshold
+            "main_decoder": "Spatio-Temporal Local Transformer",
+            "confidence_threshold": self.confidence_threshold,
+            "total_parameters": sum(p.numel() for p in self.parameters())
         }
 
 
-# Testing
+# Quick Test
 if __name__ == "__main__":
     model = AdaptiveHybridDecoder()
-    dummy = torch.randn(2, 1, 12, 12, 7)
-    logits, conf, ratio = model(dummy)
-    print("Hybrid Model Output:")
-    print("Logits shape:", logits.shape)
-    print("Avg Confidence:", conf.mean().item())
+    dummy_input = torch.randn(4, 1, 12, 12, 7)
+    output = model(dummy_input)
+    print("Hybrid Model Output Keys:", output.keys())
+    print("Logits shape:", output['logits'].shape)
+    print("Avg Confidence:", output['confidence'].mean().item())
+
+
+
+
+
+
