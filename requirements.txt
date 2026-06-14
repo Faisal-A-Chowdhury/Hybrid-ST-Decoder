@@ -1,1 +1,8 @@
-
+torch>=2.1.0
+numpy
+tqdm
+wandb
+matplotlib
+seaborn
+pyyaml
+stim
